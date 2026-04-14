@@ -1,0 +1,13 @@
+# SMPTE 100% color bars - BT.709 limited range P010 (10-bit NV12)
+# Tests 10-bit Direct-to-Plane scanout via RendererDRMPRIME
+shader = smpte_bars.frag
+width = 1920
+height = 1080
+fps = 30000/1001
+bits = 10
+format = p010
+colorspace = bt709
+range = limited
+primaries = bt709
+transfer = bt709
+duration = 30

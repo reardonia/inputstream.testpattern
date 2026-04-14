@@ -1,0 +1,12 @@
+# build artifacts
+/build/
+inputstream.*/addon.xml
+
+# editors
+*.swp
+*~
+.idea/
+.vscode/
+
+# macOS
+.DS_Store

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="inputstream.testpattern"
+       version="0.0.1"
+       name="Test Pattern Generator"
+       provider-name="reardonia">
+  <requires>@ADDON_DEPENDS@</requires>
+  <extension point="kodi.inputstream"
+             name="testpattern"
+             extension="pattern"
+             library_@PLATFORM@="@LIBRARY_FILENAME@"/>
+  <extension point="xbmc.addon.metadata">
+    <platform>@PLATFORM@</platform>
+    <license>GPL-2.0-or-later</license>
+    <summary lang="en_GB">Test pattern generator for video pipeline verification and display calibration</summary>
+    <description lang="en_GB">Generates test patterns from GLSL shaders and feeds them through the video pipeline as YUV frames. Used for (1) video pipeline verification (renderer correctness for limited range compression, 10-bit precision, HDR tone mapping, format conversion) and (2) display calibration using SMPTE reference patterns. Requires EGL.</description>
+  </extension>
+</addon>

@@ -1,0 +1,15 @@
+# SMPTE 100% color bars - 2.35:1 letterboxed
+# Tests black bar rendering and GUI double-compression
+# 1920x818 = 2.35:1 aspect ratio -> letterbox bars on 16:9 display
+
+shader = smpte_bars.frag
+width = 1920
+height = 818
+fps = 30000/1001
+bits = 8
+format = yuv420p
+colorspace = bt709
+range = limited
+primaries = bt709
+transfer = bt709
+duration = 30

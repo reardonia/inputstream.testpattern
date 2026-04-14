@@ -1,0 +1,14 @@
+# SMPTE 100% color bars - BT.709 limited range 8-bit 4:4:4
+# Tests YUV 4:4:4 planar rendering path (no chroma subsampling)
+
+shader = smpte_bars.frag
+width = 1920
+height = 1080
+fps = 30000/1001
+bits = 8
+format = yuv444p
+colorspace = bt709
+range = limited
+primaries = bt709
+transfer = bt709
+duration = 30

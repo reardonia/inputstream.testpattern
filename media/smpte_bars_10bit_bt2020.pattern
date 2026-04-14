@@ -1,0 +1,13 @@
+# SMPTE 100% color bars - BT.2020 limited range 10-bit
+# Tests BT.2020 YUV-to-RGB matrix (different coefficients from BT.709)
+shader = smpte_bars_bt2020.frag
+width = 1920
+height = 1080
+fps = 30000/1001
+bits = 10
+format = yuv420p
+colorspace = bt2020nc
+range = limited
+primaries = bt2020
+transfer = bt709
+duration = 30
