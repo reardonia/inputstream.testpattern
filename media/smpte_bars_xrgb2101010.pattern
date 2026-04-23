@@ -1,0 +1,20 @@
+# SMPTE color bars - 10-bit RGB (DRM_FORMAT_XRGB2101010) HDR BT.2020 PQ
+# Tests RGB zero-copy path with HDR signaling. Requires useprimedecoder=true
+# and useprimerenderer=0. Should signal Colorspace=BT2020_RGB to the display
+# (via the colorimetry RGB-variant fix on integration-test).
+shader = smpte_bars_rgb.frag
+width = 3840
+height = 2160
+fps = 24
+format = xrgb2101010
+colorspace = bt2020nc
+range = limited
+primaries = bt2020
+transfer = pq
+duration = 30
+framecount = 3600-2060
+display_primaries = 0.680,0.320,0.265,0.690,0.150,0.060
+white_point = 0.3127,0.3290
+luminance = 0.0001,1000.0
+max_cll = 1000
+max_fall = 400

@@ -16,7 +16,9 @@
 #include <cstring>
 #include <sstream>
 
+#include <EGL/eglext.h>
 #include <GLES2/gl2ext.h>
+#include <drm_fourcc.h>
 
 namespace
 {
@@ -61,8 +63,7 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
     return false;
   }
 
-  // extradata: "shaderPath\0format\0bits\0\0\0framecount"
-  // (the two empty middle fields are reserved for future use)
+  // extradata: "shaderPath\0format\0bits\0transfer\0framecount"
   std::string extraStr(reinterpret_cast<const char*>(extra), extraSize);
   std::string shaderPath;
   size_t pos1 = extraStr.find('\0');
@@ -80,11 +81,8 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
         size_t pos4 = extraStr.find('\0', pos3 + 1);
         if (pos4 != std::string::npos)
         {
-          // Skip reserved field at pos3+1..pos4
-          size_t pos5 = extraStr.find('\0', pos4 + 1);
-          std::string frameCountStr;
-          if (pos5 != std::string::npos)
-            frameCountStr = extraStr.substr(pos5 + 1);
+          m_transfer = extraStr.substr(pos3 + 1, pos4 - pos3 - 1);
+          std::string frameCountStr = extraStr.substr(pos4 + 1);
 
           if (!frameCountStr.empty())
           {
@@ -114,7 +112,8 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
     shaderPath = extraStr;
   }
   // Normalize format string: extract bit depth if embedded in format name
-  // Accepts: yuv420p, yuv420p10, yuv420p10le, yuv422p12, yuv444p10le, p010, nv12
+  // Accepts: yuv420p, yuv420p10, yuv420p10le, yuv422p12, yuv444p10le, p010,
+  // nv12, xrgb8888, xrgb2101010, xrgb16161616, xrgb16161616f
   struct { const char* name; const char* base; int bits; } formatAliases[] = {
     {"yuv420p10le", "yuv420p", 10}, {"yuv420p10", "yuv420p", 10},
     {"yuv420p12le", "yuv420p", 12}, {"yuv420p12", "yuv420p", 12},
@@ -124,6 +123,10 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
     {"yuv444p12le", "yuv444p", 12}, {"yuv444p12", "yuv444p", 12},
     {"p010",         "p010",          10},
     {"nv12",         "nv12",           8},
+    {"xrgb8888",     "xrgb8888",       8},
+    {"xrgb2101010",  "xrgb2101010",   10},
+    {"xrgb16161616", "xrgb16161616",  12},
+    {"xrgb16161616f","xrgb16161616f", 16},
   };
   for (const auto& alias : formatAliases)
   {
@@ -136,6 +139,12 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
     }
   }
   m_bytesPerSample = m_bitDepth > 8 ? 2 : 1;
+
+  // RGB detection: packed XRGB formats use a single plane, 4 or 8 bytes/pixel.
+  m_isRGB = (m_format == "xrgb8888" || m_format == "xrgb2101010" ||
+             m_format == "xrgb16161616" || m_format == "xrgb16161616f");
+  if (m_isRGB)
+    m_rgbBytesPerPixel = (m_format == "xrgb16161616" || m_format == "xrgb16161616f") ? 8 : 4;
 
   // load shader source
   kodi::vfs::CFile file;
@@ -175,6 +184,28 @@ bool CTestPatternCodec::Open(const kodi::addon::VideoCodecInitdata& initData)
   }
 
   // compute plane layout once
+  if (m_isRGB)
+  {
+    // Packed RGB: single plane, no subsampling. decodedDataSize is the
+    // total packed pixel buffer size for the RGB zero-copy path.
+    m_subsampleX = 1;
+    m_subsampleY = 1;
+    m_yStride = m_width * m_rgbBytesPerPixel;
+    m_ySize = m_yStride * m_height;
+    m_uvStride = 0;
+    m_uvSize = 0;
+    m_yuvFrameSize = m_ySize;
+
+    eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    m_frameNumber = 0;
+    m_hasFrame = false;
+    m_opened = true;
+
+    kodi::Log(ADDON_LOG_INFO, "CTestPatternCodec: opened RGB (%dx%d, format=%s, shader=%s)",
+              m_width, m_height, m_format.c_str(), shaderPath.c_str());
+    return true;
+  }
+
   if (m_format == "yuv444p")
   { m_subsampleX = 1; m_subsampleY = 1; }
   else if (m_format == "yuv422p")
@@ -228,6 +259,16 @@ void CTestPatternCodec::Reset()
   m_hasFrame = false;
 }
 
+void CTestPatternCodec::SetPictureHdrType(VIDEOCODEC_PICTURE& picture) const
+{
+  if (m_transfer == "pq" || m_transfer == "smpte2084")
+    picture.hdrType = VIDEOCODEC_HDR_TYPE_HDR10;
+  else if (m_transfer == "hlg" || m_transfer == "arib-std-b67")
+    picture.hdrType = VIDEOCODEC_HDR_TYPE_HLG;
+  else
+    picture.hdrType = VIDEOCODEC_HDR_TYPE_NONE;
+}
+
 VIDEOCODEC_RETVAL CTestPatternCodec::GetPicture(VIDEOCODEC_PICTURE& picture)
 {
   if (picture.flags & VIDEOCODEC_PICTURE_FLAG_DRAIN)
@@ -244,6 +285,37 @@ VIDEOCODEC_RETVAL CTestPatternCodec::GetPicture(VIDEOCODEC_PICTURE& picture)
   picture.pts = m_pts;
   picture.flags = 0;
   picture.decodedDataSize = m_yuvFrameSize;
+
+  if (m_isRGB)
+  {
+    // ===== RGB zero-copy path =====
+    // Set videoFormat first so GetFrameBuffer (called by RenderToDmaBuf) knows
+    // what DRM fourcc to allocate.
+    if (m_format == "xrgb8888")           picture.videoFormat = VIDEOCODEC_FORMAT_XRGB8888;
+    else if (m_format == "xrgb2101010")   picture.videoFormat = VIDEOCODEC_FORMAT_XRGB2101010;
+    else if (m_format == "xrgb16161616")  picture.videoFormat = VIDEOCODEC_FORMAT_XRGB16161616;
+    else if (m_format == "xrgb16161616f") picture.videoFormat = VIDEOCODEC_FORMAT_XRGB16161616F;
+
+    picture.stride[VIDEOCODEC_PICTURE_Y_PLANE] = m_width * m_rgbBytesPerPixel;
+    picture.planeOffsets[VIDEOCODEC_PICTURE_Y_PLANE] = 0;
+    picture.stride[VIDEOCODEC_PICTURE_U_PLANE] = 0;
+    picture.planeOffsets[VIDEOCODEC_PICTURE_U_PLANE] = 0;
+    picture.stride[VIDEOCODEC_PICTURE_V_PLANE] = 0;
+    picture.planeOffsets[VIDEOCODEC_PICTURE_V_PLANE] = 0;
+
+    SetPictureHdrType(picture);
+
+    if (!RenderToDmaBuf(picture))
+    {
+      kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: RenderToDmaBuf failed");
+      return VC_ERROR;
+    }
+
+    m_frameNumber++;
+    return VC_PICTURE;
+  }
+
+  // ===== YUV path (original CPU-pack flow) =====
 
   // timing probes -- log every 30 frames
   using clk = std::chrono::steady_clock;
@@ -313,6 +385,8 @@ VIDEOCODEC_RETVAL CTestPatternCodec::GetPicture(VIDEOCODEC_PICTURE& picture)
     picture.stride[VIDEOCODEC_PICTURE_V_PLANE] = m_uvStride;
     picture.planeOffsets[VIDEOCODEC_PICTURE_V_PLANE] = m_ySize + m_uvSize;
   }
+
+  SetPictureHdrType(picture);
 
   auto t6 = clk::now();
 
@@ -655,3 +729,131 @@ void CTestPatternCodec::RenderPattern()
 
   glFinish();
 }
+
+bool CTestPatternCodec::RenderToDmaBuf(VIDEOCODEC_PICTURE& picture)
+{
+  // Allocate a DMA-BUF of the requested RGB format from Kodi's pool. Kodi
+  // builds a CVideoBufferDMA with the matching DRM fourcc.
+  if (!GetFrameBuffer(picture))
+  {
+    kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: GetFrameBuffer failed");
+    return false;
+  }
+
+  // Query the platform-native handle so we can render directly into the
+  // underlying DMA-BUF without going through CPU memory.
+  VIDEOCODEC_PLATFORM_BUFFER pb = {};
+  if (!GetFrameBufferPlatformHandle(picture.videoBufferHandle, pb) ||
+      pb.type != VIDEOCODEC_PLATFORM_BUFFER_DRM_PRIME || !pb.handle)
+  {
+    kodi::Log(ADDON_LOG_ERROR,
+              "CTestPatternCodec: no DRM_PRIME handle (type=%d) -- "
+              "is useprimedecoder=true?", static_cast<int>(pb.type));
+    return false;
+  }
+
+  auto* desc = static_cast<KODI_DRM_FRAME_DESCRIPTOR*>(pb.handle);
+  if (desc->nb_objects < 1 || desc->nb_layers < 1 || desc->layers[0].nb_planes < 1)
+  {
+    kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: malformed DRM frame descriptor");
+    return false;
+  }
+
+  int fd = desc->objects[0].fd;
+  uint32_t fourcc = desc->layers[0].format;
+  uint64_t modifier = desc->objects[0].format_modifier;
+  int offset = static_cast<int>(desc->layers[0].planes[0].offset);
+  int pitch = static_cast<int>(desc->layers[0].planes[0].pitch);
+
+  if (!eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglContext))
+  {
+    kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: eglMakeCurrent failed");
+    return false;
+  }
+
+  // Resolve EGL/GL extension functions on first use.
+  static auto eglCreateImageKHRFn =
+      reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(eglGetProcAddress("eglCreateImageKHR"));
+  static auto eglDestroyImageKHRFn =
+      reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
+  static auto glEGLImageTargetRenderbufferStorageOESFn =
+      reinterpret_cast<PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC>(
+          eglGetProcAddress("glEGLImageTargetRenderbufferStorageOES"));
+  if (!eglCreateImageKHRFn || !eglDestroyImageKHRFn ||
+      !glEGLImageTargetRenderbufferStorageOESFn)
+  {
+    kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: missing EGL/GL extension entry points");
+    eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return false;
+  }
+
+  // Build the EGLImage attribute list. Modifier attribs are optional but most
+  // drivers prefer them when known.
+  EGLint attribs[24];
+  int i = 0;
+  attribs[i++] = EGL_WIDTH;                       attribs[i++] = m_width;
+  attribs[i++] = EGL_HEIGHT;                      attribs[i++] = m_height;
+  attribs[i++] = EGL_LINUX_DRM_FOURCC_EXT;        attribs[i++] = static_cast<EGLint>(fourcc);
+  attribs[i++] = EGL_DMA_BUF_PLANE0_FD_EXT;       attribs[i++] = fd;
+  attribs[i++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;   attribs[i++] = offset;
+  attribs[i++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;    attribs[i++] = pitch;
+  if (modifier != DRM_FORMAT_MOD_INVALID)
+  {
+    attribs[i++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+    attribs[i++] = static_cast<EGLint>(modifier & 0xFFFFFFFFu);
+    attribs[i++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+    attribs[i++] = static_cast<EGLint>(modifier >> 32);
+  }
+  attribs[i++] = EGL_NONE;
+
+  EGLImageKHR eglImage = eglCreateImageKHRFn(m_eglDisplay, EGL_NO_CONTEXT,
+                                              EGL_LINUX_DMA_BUF_EXT, nullptr, attribs);
+  if (eglImage == EGL_NO_IMAGE_KHR)
+  {
+    kodi::Log(ADDON_LOG_ERROR,
+              "CTestPatternCodec: eglCreateImageKHR failed (egl=%#x fourcc=%c%c%c%c)",
+              eglGetError(),
+              fourcc & 0xff, (fourcc >> 8) & 0xff,
+              (fourcc >> 16) & 0xff, (fourcc >> 24) & 0xff);
+    eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return false;
+  }
+
+  // Bind the EGLImage as a renderbuffer attached to a transient FBO.
+  GLuint rb = 0;
+  glGenRenderbuffers(1, &rb);
+  glBindRenderbuffer(GL_RENDERBUFFER, rb);
+  glEGLImageTargetRenderbufferStorageOESFn(GL_RENDERBUFFER, eglImage);
+
+  GLuint fbo = 0;
+  glGenFramebuffers(1, &fbo);
+  glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+
+  GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+  if (status != GL_FRAMEBUFFER_COMPLETE)
+  {
+    kodi::Log(ADDON_LOG_ERROR, "CTestPatternCodec: dma-buf FBO incomplete: 0x%x",
+              static_cast<unsigned>(status));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &rb);
+    eglDestroyImageKHRFn(m_eglDisplay, eglImage);
+    eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return false;
+  }
+
+  // Render the shader directly into the DMA-BUF.
+  RenderPattern();
+
+  // Tear down the transient FBO and EGLImage. The DMA-BUF itself remains
+  // owned by Kodi and will be released by the renderer/SyncEnd path.
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glDeleteFramebuffers(1, &fbo);
+  glDeleteRenderbuffers(1, &rb);
+  eglDestroyImageKHRFn(m_eglDisplay, eglImage);
+
+  eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  return true;
+}
+

@@ -12,3 +12,4 @@ range = limited
 primaries = bt709
 transfer = bt709
 duration = 15
+framecount = 1700-1000

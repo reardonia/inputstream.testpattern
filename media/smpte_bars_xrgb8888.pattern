@@ -1,0 +1,15 @@
+# SMPTE color bars - 8-bit RGB (DRM_FORMAT_XRGB8888) SDR BT.709
+# Tests RGB zero-copy path: shader renders directly into a DMA-BUF that
+# is scanned out by RendererDRMPRIME D2P (no GL renderer shader involved).
+# Requires useprimedecoder=true and useprimerenderer=0 (D2P scanout mode).
+shader = smpte_bars_rgb.frag
+width = 1920
+height = 1080
+fps = 30000/1001
+format = xrgb8888
+colorspace = bt709
+range = limited
+primaries = bt709
+transfer = bt709
+duration = 30
+framecount = 1700-1000

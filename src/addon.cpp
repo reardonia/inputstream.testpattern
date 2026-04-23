@@ -65,10 +65,10 @@ bool CTestPatternInputStream::Open(const kodi::addon::InputstreamProperty& props
   }
 
   // compute frame size for queue management
-  bool isRgb = (m_config.format == "xrgb8888" || m_config.format == "xrgb2101010" ||
+  bool isRGB = (m_config.format == "xrgb8888" || m_config.format == "xrgb2101010" ||
                 m_config.format == "xrgb16161616" || m_config.format == "xrgb16161616f");
 
-  if (isRgb)
+  if (isRGB)
   {
     // Packed RGB: single plane, no subsampling.
     // 32 bpp for 8/10-bit, 64 bpp for 16-bit int and half-float.
@@ -141,7 +141,8 @@ bool CTestPatternInputStream::GetStream(int streamid, kodi::addon::InputstreamIn
   stream.SetFeatures(INPUTSTREAM_FEATURE_DECODE);
 
   // pass fields through as NUL-separated extradata
-  // format: "shaderPath\0format\0bits\0\0\0framecount"
+  // format: "shaderPath\0format\0bits\0transfer\0framecount"
+  // transfer: "pq"/"smpte2084"/"hlg"/"arib-std-b67"/"bt709"/... or empty
   // framecount: "X-Y" or empty
   std::string frameCountStr;
   if (m_config.frameCountX >= 0 && m_config.frameCountY >= 0)
@@ -149,7 +150,7 @@ bool CTestPatternInputStream::GetStream(int streamid, kodi::addon::InputstreamIn
                     std::to_string(m_config.frameCountY);
   std::string extraData = m_config.shaderPath + '\0' + m_config.format + '\0' +
                           std::to_string(m_config.bitDepth) + '\0' +
-                          "0" + '\0' + "" + '\0' +
+                          m_config.transfer + '\0' +
                           frameCountStr;
   stream.SetExtraData(reinterpret_cast<const uint8_t*>(extraData.data()),
                       extraData.size());

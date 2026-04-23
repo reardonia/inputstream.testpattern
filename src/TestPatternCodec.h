@@ -40,6 +40,10 @@ private:
   // Returns true on success, false on any EGL/GL error (caller can fall back).
   bool RenderToDmaBuf(VIDEOCODEC_PICTURE& picture);
 
+  // Set picture.hdrType explicitly per VIDEOCODEC_PICTURE API, from
+  // m_transfer. Overrides Kodi's stream-hint derivation.
+  void SetPictureHdrType(VIDEOCODEC_PICTURE& picture) const;
+
   int m_width = 0;
   int m_height = 0;
   int m_frameNumber = 0;
@@ -57,7 +61,7 @@ private:
   int m_uvSize = 0;
   int m_subsampleX = 2; // horizontal chroma subsampling factor
   int m_subsampleY = 2; // vertical chroma subsampling factor
-  bool m_isRgb = false; // true for xrgb8888/xrgb2101010/xrgb16161616/xrgb16161616f
+  bool m_isRGB = false; // true for xrgb8888/xrgb2101010/xrgb16161616/xrgb16161616f
   int m_rgbBytesPerPixel = 0; // 4 for 8/10-bit, 8 for 16-bit int and half-float
 
   // EGL context
@@ -84,4 +88,8 @@ private:
   // Frame counter overlay position (video top-down pixels, -1 = disabled)
   int m_frameCountX = -1;
   int m_frameCountY = -1;
+
+  // Transfer characteristic name ("pq", "smpte2084", "hlg", "arib-std-b67", "bt709", ...)
+  // used to set VIDEOCODEC_PICTURE.hdrType explicitly per frame.
+  std::string m_transfer;
 };
