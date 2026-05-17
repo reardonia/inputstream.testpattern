@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > This add-on requires [Kodi PR #28090](https://github.com/xbmc/xbmc/pull/28090)
-> (addon-instance video codec API additions). It will not build against stock Kodi.
+> (addon-instance video codec API additions), which is Kodi 22.beta1 or higher.
 
 <p align="center">
   <img width="800" alt="Color bars from SMPTE BT.709 limited range" src="https://github.com/user-attachments/assets/8082b1ab-10df-436f-9a1f-0ee6b6e48e6c" />
